@@ -31,10 +31,20 @@ run_isaac.sh / run_nav2.sh / run_rviz.sh   # 실행 스크립트
 - ROS2 Humble + Nav2 (`ros-humble-navigation2`, `ros-humble-nav2-bringup`)
 - 인터넷 연결 (`/limo`, `/limo/lidar`가 NVIDIA 서버의 https:// 에셋을 직접 참조)
 
-## ⚠️ 이 repo에 없는 것 (별도로 준비해야 함)
+## 맵 메시 원본 (git repo가 아니라 Release로 받아야 함)
 
-`usd/lcc-usdz-result/*.usdz` (맵 메시 원본, 400MB+ x2)는 GitHub 파일 크기 제한 때문에 포함되지 않았습니다.
-0907.usd를 실행하려면 이 파일들을 **별도 경로(zip 전송 등)로** 같은 상대 위치에 갖다 놔야 합니다.
+`0907.usd`가 실제로 참조/사용하는 맵 메시는 `usd/lcc-usdz-result/mesh-model.usdz` **하나뿐**입니다
+(같은 폴더의 `model.usdz`는 어디서도 참조되지 않는 미사용 파일이라 안 받아도 됩니다).
+
+일반 git 커밋에는 파일 크기 제한(100MB)에 걸려서 못 넣었고, 대신 **GitHub Release**로 올려뒀습니다:
+
+👉 **[map-assets-v1 릴리즈에서 mesh-model.usdz 다운로드](https://github.com/jeonsy7883/DT_RCcar/releases/tag/map-assets-v1)**
+
+받은 파일을 clone한 저장소의 `usd/lcc-usdz-result/mesh-model.usdz` 경로에 그대로 넣으면 됩니다.
+
+```bash
+gh release download map-assets-v1 --repo jeonsy7883/DT_RCcar -D usd/lcc-usdz-result/
+```
 
 ## 하드코딩된 경로 (다른 PC에서 실행 시 수정 필요)
 
