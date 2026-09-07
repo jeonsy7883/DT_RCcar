@@ -1,0 +1,105 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.7
+      Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: Map
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /map
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+      Show Names: false
+      Marker Scale: 0.15
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/LaserScan
+      Color: 255; 0; 0
+      Color Transformer: FlatColor
+      Enabled: true
+      Name: LaserScan
+      Size (m): 0.05
+      Topic:
+        Value: /scan
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Keep: 1
+      Name: Odometry
+      Shape:
+        Value: Arrow
+      Color: 255; 255; 0
+      Shaft Length: 0.3
+      Shaft Radius: 0.05
+      Head Length: 0.15
+      Head Radius: 0.08
+      Topic:
+        Value: /odom
+      Value: true
+    - Class: rviz_default_plugins/Axes
+      Enabled: true
+      Name: RobotAxes
+      Reference Frame: base_link
+      Length: 0.3
+      Radius: 0.03
+      Value: true
+    - Alpha: 0.6
+      Class: rviz_default_plugins/Polygon
+      Color: 0; 255; 255
+      Enabled: true
+      Name: RobotFootprint
+      Topic:
+        Value: /local_costmap/published_footprint
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: GlobalPlan
+      Color: 0; 255; 0
+      Line Width: 0.05
+      Topic:
+        Value: /plan
+      Value: true
+    - Class: rviz_default_plugins/PointStamped
+      Enabled: true
+      Name: LookaheadPoint
+      Color: 255; 255; 0
+      Radius: 0.1
+      Topic:
+        Value: /lookahead_point
+      Value: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Scale: 15
+      X: 4.7
+      Y: -4.05
+      Angle: 0
+      Invert Z Axis: false
+      Name: Current View
+      Target Frame: map
+Window Geometry:
+  Height: 900
+  Width: 1400

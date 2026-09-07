@@ -1,0 +1,10 @@
+# 대용량 맵 원본 데이터 — GitHub 100MB 제한 초과 (400MB+ x2).
+# 0907.usd가 상대경로로 참조하므로 실제 실행 시엔 반드시 필요함 — 별도로(zip 등) 옮길 것.
+usd/lcc-usdz-result/*.usdz
+
+# 어디서도 참조하지 않는 원본 업로드 백업본
+officeusd*.zip
+
+# Isaac Sim / Python 캐시
+__pycache__/
+*.pyc
