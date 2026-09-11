@@ -4,7 +4,7 @@ Isaac Sim 안에 스캔한 사무실 맵(Gaussian Splat) 위에 AgileX Limo(4륜
 
 맵 원본은 **XGRIDS K2** 장비로 사무실을 스캔해서 얻은 Gaussian Splat 재구성 결과(`usd/lcc-usdz-result/mesh-model.usdz`)입니다.
 
-![Isaac Sim에서 렌더링한 스캔 사무실](docs/office_scan.png)
+![Isaac Sim에서 렌더링한 스캔 사무실 (분홍색: 콜리전 메시, 초록: Limo 로봇)](docs/office_scan.png)
 
 1. **WASD 키보드 텔레옵**으로 수동 조작
 2. **RViz에서 클릭한 목표 지점까지 Nav2 자율주행**
