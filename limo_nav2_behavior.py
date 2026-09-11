@@ -5,7 +5,9 @@ import carb.input
 import numpy as np
 import omni.appwindow
 import omni.kit.app
+import omni.physx
 import omni.replicator.core as rep
+import omni.usd
 import rclpy
 from builtin_interfaces.msg import Time as TimeMsg
 from geometry_msgs.msg import Twist, TransformStamped
@@ -15,11 +17,30 @@ from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.wheeled_robots.controllers.differential_controller import DifferentialController
 from nav_msgs.msg import Odometry
 from omni.kit.scripting import BehaviorScript
+from pxr import PhysicsSchemaTools, PhysxSchema, Usd, UsdPhysics
 from rosgraph_msgs.msg import Clock
+from std_msgs.msg import Float32
 from tf2_ros import TransformBroadcaster
 
 _PHYSICS_CALLBACK_NAME = "limo_nav2_physics_step"
 _LIDAR_RELATIVE_PATH = "/lidar"
+
+# 벽 충돌 감지 -> 실물 RC카(라즈베리파이) 부저.
+# 바퀴-바닥 접촉의 노멀은 거의 수직(z≈1)이고, 벽처럼 수직면과 부딪히는 접촉의 노멀은 거의
+# 수평(z≈0)이다. 다만 이 맵은 Gaussian Splat 재구성 메시라 바닥이 울퉁불퉁해서, 바퀴(둥근 형상)가
+# 접촉할 때 normal_z가 평지 주행 중에도 0.17까지 낮게 나올 수 있다(실측 확인) — 노멀 방향만으로는
+# "평지 노이즈"와 "벽 충돌"을 구분할 수 없다. 대신 접촉 impulse의 수평 성분 크기를 같이 본다:
+# 실측상 평지 주행(노이즈 포함)에서는 horiz_impulse가 최대 0.82를 넘지 않았고, 실제 벽 충돌은
+# 최대 5.08까지 나왔다. 두 조건(수평에 가까운 노멀 + 충분히 큰 수평 impulse)을 함께 요구해서
+# 오탐을 막는다. 맵이 바뀌면 이 값들도 재검증 필요.
+# 부저는 시뮬레이션 안이 아니라 실물 라즈베리파이의 buzzer_node(rccar_driver 패키지, /buzzer_volume
+# 토픽 구독, duty 0~100%)를 원격으로 울린다 — 데스크탑과 라즈베리파이가 같은 ROS_DOMAIN_ID(=0)에
+# 있어야 하고, 라즈베리파이에서 buzzer_node가 떠 있어야 함(재부팅 시 수동 재실행 필요, 카메라
+# 노드와 동일). duty=25는 test_buzzer_1sec.py로 실측 검증된 "조용한" 값(이후 5로 낮춤).
+_WALL_CONTACT_NORMAL_Z_THRESHOLD = 0.3
+_WALL_CONTACT_IMPULSE_THRESHOLD = 1.0
+_BUZZER_DUTY_ON = 5.0
+_BUZZER_ON_DURATION_SEC = 0.2
 
 # limo_ROS.usd 내장 OmniGraph(/limo/drive)에서 쓰던 값과 동일하게 맞춤
 _WHEEL_RADIUS = 0.025
@@ -69,6 +90,16 @@ class LimoNav2Bridge(BehaviorScript):
         self._base_command = np.array([0.0, 0.0])
         self._wasd_command = np.array([0.0, 0.0])
         self._keys_held = set()
+        self._contact_report_sub = None
+        # on_init()은 스크립트가 프림에 attach되는 시점(스테이지 로드 시, Play를 누르기 훨씬 전)에
+        # 호출된다. PhysxContactReportAPI는 Play 시점에 PhysX가 씬을 파싱하기 전에 이미 프림에
+        # 붙어 있어야 하므로 (Isaac Sim 공식 ContactReportDemo도 씬 "생성" 시점에 붙임) 여기서
+        # 적용한다 — on_play() 이후(_setup_impl)에 붙였을 때는 Kit의 자체 Play 처리가 이미 물리 씬을
+        # 파싱해버린 뒤라 반영이 안 되는 문제가 실측으로 확인됐다.
+        self._apply_contact_report_schema()
+        self._buzzer_pub = None
+        self._buzzer_is_on = False
+        self._buzzer_off_at_sim_time = -1.0
 
     def on_play(self):
         if self._setting_up:
@@ -107,6 +138,11 @@ class LimoNav2Bridge(BehaviorScript):
 
         if world._physics_context is None:
             world._init_stage()
+
+        # PhysxContactReportAPI 적용은 on_init()에서 이미 끝났다 (Play 이후엔 이미 늦음 — on_init 쪽
+        # 주석 참고). 여기서는 안전망으로 한 번 더 호출한다(Apply()는 멱등이라 중복 호출해도 무해함).
+        self._apply_contact_report_schema()
+
         world.initialize_physics()
 
         app = omni.kit.app.get_app()
@@ -125,6 +161,7 @@ class LimoNav2Bridge(BehaviorScript):
 
         self._setup_ros()
         self._setup_lidar_publisher()
+        self._subscribe_contact_report()
 
         if world.physics_callback_exists(_PHYSICS_CALLBACK_NAME):
             world.remove_physics_callback(_PHYSICS_CALLBACK_NAME)
@@ -142,6 +179,7 @@ class LimoNav2Bridge(BehaviorScript):
         self._cmd_vel_sub = self._node.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
         self._odom_pub = self._node.create_publisher(Odometry, "/odom", 10)
         self._clock_pub = self._node.create_publisher(Clock, "/clock", 10)
+        self._buzzer_pub = self._node.create_publisher(Float32, "/buzzer_volume", 10)
         self._tf_broadcaster = TransformBroadcaster(self._node)
 
     def _sim_time_msg(self) -> TimeMsg:
@@ -161,6 +199,58 @@ class LimoNav2Bridge(BehaviorScript):
         writer = rep.writers.get("RtxLidarROS2PublishLaserScan")
         writer.initialize(topicName="scan", frameId="lidar_frame")
         writer.attach([hydra_texture])
+
+    def _apply_contact_report_schema(self):
+        # 로봇 산하의 모든 강체 링크(섀시 + 바퀴)에 PhysX contact report를 건다. threshold는 0으로
+        # 두고(모든 접촉을 다 받음) 대신 콜백에서 접촉 노멀 방향으로 벽/바닥을 구분한다.
+        # world.initialize_physics()보다 먼저 호출해야 한다 — PhysX가 씬을 파싱한 뒤에 스키마를
+        # 붙이면 이미 만들어진 PhysX 액터에는 반영되지 않아 콜백이 아예 호출되지 않는다.
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            carb.log_warn("[limo_nav2] contact report schema: stage not ready yet, skipping")
+            return
+        robot_prim = stage.GetPrimAtPath(str(self.prim_path))
+        if not robot_prim.IsValid():
+            carb.log_warn(f"[limo_nav2] contact report schema: prim {self.prim_path} not valid yet, skipping")
+            return
+        applied_count = 0
+        for prim in Usd.PrimRange(robot_prim):
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                api = PhysxSchema.PhysxContactReportAPI.Apply(prim)
+                api.CreateThresholdAttr().Set(0.0)
+                applied_count += 1
+        carb.log_warn(
+            f"[limo_nav2] contact report schema applied to {applied_count} rigid body prim(s) under {robot_prim.GetPath()}"
+        )
+
+    def _subscribe_contact_report(self):
+        self._contact_report_sub = omni.physx.get_physx_simulation_interface().subscribe_contact_report_events(
+            self._on_contact_report
+        )
+
+    def _on_contact_report(self, contact_headers, contact_data):
+        robot_path = str(self.prim_path)
+        for header in contact_headers:
+            actor0 = str(PhysicsSchemaTools.intToSdfPath(header.actor0))
+            actor1 = str(PhysicsSchemaTools.intToSdfPath(header.actor1))
+            if not (actor0.startswith(robot_path) or actor1.startswith(robot_path)):
+                continue
+            if self._buzzer_is_on:
+                continue  # 이미 울리는 중이면 재트리거하지 않음
+            for i in range(header.contact_data_offset, header.contact_data_offset + header.num_contact_data):
+                normal_z = abs(contact_data[i].normal[2])
+                imp = contact_data[i].impulse
+                horiz_impulse = (imp[0] ** 2 + imp[1] ** 2) ** 0.5
+                # 노멀 방향만으론 부족하다: 바퀴 곡면 + 바닥 메시 노이즈 때문에 평지 주행 중에도
+                # normal_z가 낮게(실측 0.17까지) 나올 수 있다. 대신 그런 노이즈성 접촉의 horiz_impulse는
+                # 실측상 최대 0.82(순수 주행)~0.36(낮은 normal_z 구간)을 넘지 않았고, 실제 벽 충돌은
+                # 최대 5.08까지 나왔다 — 그래서 두 조건을 함께 요구해서 오탐을 막는다.
+                if normal_z < _WALL_CONTACT_NORMAL_Z_THRESHOLD and horiz_impulse > _WALL_CONTACT_IMPULSE_THRESHOLD:
+                    self._buzzer_is_on = True
+                    self._buzzer_off_at_sim_time = self._elapsed_sim_time + _BUZZER_ON_DURATION_SEC
+                    if self._buzzer_pub is not None:
+                        self._buzzer_pub.publish(Float32(data=_BUZZER_DUTY_ON))
+                    return
 
     def _on_cmd_vel(self, msg: Twist):
         vx = float(np.clip(msg.linear.x, -_MAX_LINEAR_CMD, _MAX_LINEAR_CMD))
@@ -197,6 +287,14 @@ class LimoNav2Bridge(BehaviorScript):
         if self._world is not None and self._world.physics_callback_exists(_PHYSICS_CALLBACK_NAME):
             self._world.remove_physics_callback(_PHYSICS_CALLBACK_NAME)
 
+        self._contact_report_sub = None
+
+        # Stop 시점에 부저가 울리는 중이었다면 라즈베리파이 쪽에 꺼짐 신호를 보내고 정리한다
+        # (안 그러면 노드가 죽어도 라즈베리파이는 마지막으로 받은 duty를 계속 유지함).
+        if self._buzzer_is_on and self._buzzer_pub is not None:
+            self._buzzer_pub.publish(Float32(data=0.0))
+        self._buzzer_is_on = False
+
         if self._node is not None:
             self._node.destroy_node()
             self._node = None
@@ -206,6 +304,7 @@ class LimoNav2Bridge(BehaviorScript):
         self._cmd_vel_sub = None
         self._odom_pub = None
         self._clock_pub = None
+        self._buzzer_pub = None
         self._tf_broadcaster = None
         self._lidar_hydra_texture = None
         self._robot = None
@@ -225,6 +324,11 @@ class LimoNav2Bridge(BehaviorScript):
             ArticulationAction(joint_velocities=joint_velocities, joint_indices=self._joint_indices)
         )
         self._elapsed_sim_time += step_size
+
+        if self._buzzer_is_on and self._elapsed_sim_time >= self._buzzer_off_at_sim_time:
+            self._buzzer_is_on = False
+            if self._buzzer_pub is not None:
+                self._buzzer_pub.publish(Float32(data=0.0))
 
         if self._node is not None:
             rclpy.spin_once(self._node, timeout_sec=0.0)
